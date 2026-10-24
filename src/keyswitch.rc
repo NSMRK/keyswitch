@@ -1,0 +1,34 @@
+#include <windows.h>
+#include "version.h"
+
+1 ICON "keyswitch.ico"
+1 24 "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    KS_VER_MAJOR,KS_VER_MINOR,KS_VER_PATCH,0
+ PRODUCTVERSION KS_VER_MAJOR,KS_VER_MINOR,KS_VER_PATCH,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "NSMRK"
+            VALUE "FileDescription",  "KeySwitch - keyboard layout switcher"
+            VALUE "FileVersion",      KS_VERSION_STR
+            VALUE "InternalName",     "KeySwitch"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 NSMRK"
+            VALUE "OriginalFilename", "KeySwitch.exe"
+            VALUE "ProductName",      "KeySwitch"
+            VALUE "ProductVersion",   KS_VERSION_STR " (build " KS_BUILD_STR ")"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
