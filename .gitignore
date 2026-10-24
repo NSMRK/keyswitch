@@ -1,0 +1,11 @@
+# Build output
+*.exe
+*.o
+*.obj
+*.res
+*.pdb
+*.ilk
+*.exp
+*.lib
+build/
+.vs/
