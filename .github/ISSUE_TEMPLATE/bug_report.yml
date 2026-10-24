@@ -1,0 +1,28 @@
+name: "🐞 Bug report / Сообщить об ошибке"
+description: "Something doesn't work as expected / Что-то работает не так"
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: "What happened? / Что произошло?"
+      description: "What did you do, what did you expect, what did you get? / Что делали, что ожидали, что получилось?"
+      placeholder: "Typed «ghbdtn» in Notepad, pressed Pause, got «FFFF» instead of «привет»"
+    validations:
+      required: true
+  - type: input
+    id: program
+    attributes:
+      label: "Program / Программа"
+      description: "Where did it happen? / В какой программе? (Notepad, Chrome, Telegram…)"
+  - type: input
+    id: version
+    attributes:
+      label: "KeySwitch version / Версия KeySwitch"
+      description: "Tray star → About / Звезда в трее → О программе"
+      placeholder: "1.3.3"
+  - type: input
+    id: windows
+    attributes:
+      label: "Windows version and layouts / Версия Windows и раскладки"
+      placeholder: "Windows 11 24H2, Russian + English"
