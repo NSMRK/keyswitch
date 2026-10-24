@@ -1,0 +1,11 @@
+name: "💡 Idea / Предложить идею"
+description: "Something to add, change or remove / Что добавить, изменить или убрать"
+labels: ["idea"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: "Your idea / Ваша идея"
+      description: "What would you like, and why would it help you? / Что хотелось бы и чем это поможет?"
+    validations:
+      required: true
