@@ -612,10 +612,33 @@ static size_t CaretLength(const std::wstring& s) {
 // Раскладки
 // ---------------------------------------------------------------------------
 
+// Все раскладки пользователя. GetKeyboardLayoutList иногда возвращает только уже загруженные
+// (например, в сеансе удалённого рабочего стола), поэтому дополняем список из реестра
+// (HKCU\Keyboard Layout\Preload) и подгружаем недостающие, не делая их активными.
 static std::vector<HKL> Layouts() {
     int n = GetKeyboardLayoutList(0, nullptr);
     std::vector<HKL> v(n > 0 ? n : 0);
     if (n > 0) GetKeyboardLayoutList(n, v.data());
+    static bool preloaded = false;
+    if (!preloaded) {
+        preloaded = true;
+        HKEY k;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Keyboard Layout\\Preload", 0, KEY_READ, &k) == ERROR_SUCCESS) {
+            for (int i = 1; i <= 32; ++i) {
+                wchar_t name[8], klid[KL_NAMELENGTH] = {};
+                wsprintfW(name, L"%d", i);
+                DWORD size = sizeof(klid), type = 0;
+                if (RegQueryValueExW(k, name, nullptr, &type, reinterpret_cast<BYTE*>(klid), &size) != ERROR_SUCCESS)
+                    break;
+                if (type != REG_SZ) continue;
+                LoadKeyboardLayoutW(klid, KLF_NOTELLSHELL);   // уже загруженная раскладка просто вернётся
+            }
+            RegCloseKey(k);
+        }
+        n = GetKeyboardLayoutList(0, nullptr);
+        v.assign(n > 0 ? n : 0, nullptr);
+        if (n > 0) GetKeyboardLayoutList(n, v.data());
+    }
     return v;
 }
 
@@ -2181,10 +2204,8 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
     y += 2;
     h2(T(S_SEC_CURRENT));
     {
-        UINT n = GetKeyboardLayoutList(0, nullptr);
-        std::vector<HKL> lays(n ? n : 1);
-        n = GetKeyboardLayoutList(static_cast<int>(lays.size()), lays.data());
-        lays.resize(n);
+        std::vector<HKL> lays = Layouts();
+        if (lays.empty()) lays.push_back(GetKeyboardLayout(0));
         g_setLayouts = lays;
         g_setLayout = SettingsLayoutNow();
         const int cols = std::max(1, std::min(3, static_cast<int>(lays.size())));
