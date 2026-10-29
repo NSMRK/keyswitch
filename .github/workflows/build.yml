@@ -29,7 +29,7 @@ jobs:
           x86_64-w64-mingw32-windres keyswitch.rc -O coff -o keyswitch_res.o
           x86_64-w64-mingw32-g++ -std=c++17 -O2 -s -Wall -Wextra -municode -mwindows -static \
             keyswitch.cpp keyswitch_res.o -o KeySwitch.exe \
-            -luser32 -lshell32 -ladvapi32 -lgdi32 -lwinmm -lcomdlg32
+            -luser32 -lshell32 -ladvapi32 -lgdi32 -lwinmm -lcomdlg32 -lgdiplus -lole32
           sha256sum KeySwitch.exe | tee KeySwitch.exe.sha256
 
       - name: Upload artifact
@@ -46,8 +46,8 @@ jobs:
         with:
           name: KeySwitch ${{ github.ref_name }}
           body: |
-            Download `KeySwitch.exe` and run it — no installation needed.
-            Скачайте `KeySwitch.exe` и запустите — установка не нужна.
+            Download `KeySwitch.exe` and run it. No installation needed.
+            Скачайте `KeySwitch.exe` и запустите. Установка не нужна.
 
             What's new: [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
 
