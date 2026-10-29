@@ -9,7 +9,7 @@ A minimalist keyboard layout switcher for Windows 10 and 11.
 **[⬇ Download](../../releases/latest)** · **[Read the code](src/keyswitch.cpp)**
 
 <p align="center">
-  <img src="docs/tray-en.png" alt="Tray star: red for English, black for any other layout, grey when KeySwitch is off" width="480">
+  <img src="docs/tray-en.png" alt="The layout in the tray: RU in red, EN in black or white. Hover over it to see all layouts." width="680">
 </p>
 
 ## Free. Forever.
@@ -18,11 +18,11 @@ I made KeySwitch for myself because I was tired of heavy switchers with dictiona
 
 ## Check it yourself
 
-All the code is in one file of about 2,000 lines, with no third-party libraries. You can read it in an evening and see for yourself: it never goes online and never logs anything. `KeySwitch.exe` is built by GitHub straight from this code, and the release page shows exactly which version it came from.
+All the code is in one file of about 3,700 lines, with no third-party libraries. You can read it yourself and check: it never goes online and never logs anything. `KeySwitch.exe` is built by GitHub straight from this code, and the release page shows exactly which version it came from.
 
 ## Tiny
 
-One 280 KB file. No installation, no frameworks, no background services. About 2 MB of memory and 0% CPU while you're not pressing anything.
+One 370 KB file. No installation, no frameworks, no background services. About 3 MB of memory and 0% CPU while you're not pressing anything.
 
 ## Why no dictionaries
 
@@ -35,9 +35,10 @@ KeySwitch does nothing until you ask. You can see when you've typed in the wrong
 | Action | Default |
 |---|---|
 | Fix the last word | `Pause` |
-| Fix the selected text | `Shift+Pause` |
-| Change the case of the selected text | `Ctrl+Pause` |
+| Fix the selected text | `Ctrl+Pause` |
+| Change the case of the selected text | `Shift+Pause` |
 | Switch the layout | `Caps Lock` |
+| Open Settings | `Ctrl+Shift+Pause` |
 
 Regular Caps Lock is `Shift+Caps Lock`. Every hotkey can be changed in Settings.
 
@@ -46,12 +47,14 @@ Regular Caps Lock is `Shift+Caps Lock`. Every hotkey can be changed in Settings.
 - **Leaves punctuation alone.** Letters are converted, symbols stay as typed: `дела?` → `ltkf?`.
 - **Press again to cycle.** The word moves to the next layout, and the case goes lower → Sentence case → UPPER.
 - **Keep typing right away.** After a fix the cursor sits at the end of the text.
-- **Tray star** shows the layout: red for English, black for any other, grey when KeySwitch is off.
+- **The layout in the tray.** RU in red, EN in black (white on a dark taskbar), grey when KeySwitch is off. Hover over it to see all layouts and switch with a click.
+- **The tray icon can be hidden.** Settings then open with `Ctrl+Shift+Pause` or by running `KeySwitch.exe` again.
 - **A soft sound** when the layout changes. Can be turned off.
 - **Stays out of games.** Turns itself off in full-screen games.
 - **Exceptions.** Programs where KeySwitch stays off, added with *Browse…*, from running programs, or right from the tray menu.
 - **Works with any layouts** installed in Windows: Russian, Ukrainian, Greek and others.
 - **English or Russian interface**, from your Windows language or chosen in Settings.
+- **Light and dark theme**, following Windows. Changes in Settings apply instantly.
 
 <p align="center">
   <img src="docs/settings-en.png" alt="KeySwitch settings window" width="440">
@@ -60,8 +63,8 @@ Regular Caps Lock is `Shift+Caps Lock`. Every hotkey can be changed in Settings.
 ## Installation
 
 1. Download `KeySwitch.exe` from the [releases page](../../releases/latest).
-2. Put it in any folder and run it. A star appears in the system tray.
-3. Double-click the star to open Settings. You can turn on *Start with Windows* there.
+2. Put it in any folder and run it. The current layout (EN or RU) appears in the system tray.
+3. Double-click it to open Settings. You can turn on *Start with Windows* there.
 
 Requires 64-bit Windows 10 or 11. Also runs on Windows 11 on ARM (for example, Parallels on a Mac).
 
@@ -113,7 +116,7 @@ MinGW-w64 (this is how GitHub builds it):
 ```
 cd src
 windres keyswitch.rc -O coff -o keyswitch_res.o
-g++ -std=c++17 -O2 -s -municode -mwindows -static keyswitch.cpp keyswitch_res.o -o KeySwitch.exe -luser32 -lshell32 -ladvapi32 -lgdi32 -lwinmm -lcomdlg32
+g++ -std=c++17 -O2 -s -municode -mwindows -static keyswitch.cpp keyswitch_res.o -o KeySwitch.exe -luser32 -lshell32 -ladvapi32 -lgdi32 -lwinmm -lcomdlg32 -lgdiplus -lole32
 ```
 
 Visual Studio (Developer Command Prompt):
