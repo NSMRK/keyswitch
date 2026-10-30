@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.5 (2026-10-30)
+- New app icon: a grey keyboard key with KS. It replaces the star in Explorer, Task Manager, the taskbar, Settings and About.
+- Punctuation is converted by key, just as you typed it: `Ghbdtn?` becomes `Привет,` and `Rfr ltkf&` becomes `Как дела?`. A comma or period at the end of a word stays as is and no longer turns into «б» or «ю»: `Ghbdtn, rfr` becomes `Привет, как`. Inside a word such keys are letters: `lj,hsq` becomes `добрый`.
+- The layout list now includes all your layouts even in remote desktop sessions.
+
 ## 1.5.4 (2026-10-29)
 A new look.
 - **Tray icon shows the layout as letters:** RU in red, EN in black (white on a dark taskbar), grey when KeySwitch is off. The letters are drawn pixel by pixel for a crisp look at any scaling. The star is gone.

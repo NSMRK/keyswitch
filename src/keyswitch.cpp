@@ -642,8 +642,31 @@ static std::vector<HKL> Layouts() {
     return v;
 }
 
+// Поток, который на самом деле получает ввод в окне. Раскладка у каждого потока своя, и это не
+// всегда поток самого окна: фокус бывает во вложенном окне другого потока, а у приложений из
+// Microsoft Store (Калькулятор, Параметры и др.) рамка принадлежит ApplicationFrameHost,
+// а ввод получает их собственное окно Windows.UI.Core.CoreWindow.
+static DWORD InputThread(HWND wnd) {
+    DWORD tid = GetWindowThreadProcessId(wnd, nullptr);
+    wchar_t cls[64] = {};
+    GetClassNameW(wnd, cls, ARRAYSIZE(cls));
+    if (lstrcmpW(cls, L"ApplicationFrameWindow") == 0) {
+        if (HWND core = FindWindowExW(wnd, nullptr, L"Windows.UI.Core.CoreWindow", nullptr))
+            return GetWindowThreadProcessId(core, nullptr);
+    }
+    GUITHREADINFO gti = {};
+    gti.cbSize = sizeof(gti);
+    const bool isFg = wnd == GetForegroundWindow();
+    if (GetGUIThreadInfo(isFg ? 0 : tid, &gti) && gti.hwndFocus) {
+        const DWORD ft = GetWindowThreadProcessId(gti.hwndFocus, nullptr);
+        if (ft && GetKeyboardLayout(ft)) return ft;
+    }
+    return tid;
+}
+
 static HKL WindowLayout(HWND wnd) {
-    return GetKeyboardLayout(GetWindowThreadProcessId(wnd, nullptr));
+    HKL h = GetKeyboardLayout(InputThread(wnd));
+    return h ? h : GetKeyboardLayout(GetWindowThreadProcessId(wnd, nullptr));
 }
 
 // Английская ли раскладка (красная звезда). Любая другая — чёрная.
@@ -669,18 +692,23 @@ static HKL NextLayout(HKL cur) {
 // Просим окно сменить раскладку. Сообщение отправляем элементу с фокусом ввода, если он известен.
 static void SwitchLayout(HWND wnd, HKL hkl) {
     HWND target = wnd;
+    wchar_t cls[64] = {};
+    GetClassNameW(wnd, cls, ARRAYSIZE(cls));
     GUITHREADINFO gti = {};
     gti.cbSize = sizeof(gti);
-    if (GetGUIThreadInfo(GetWindowThreadProcessId(wnd, nullptr), &gti) && gti.hwndFocus)
+    if (lstrcmpW(cls, L"ApplicationFrameWindow") == 0) {
+        if (HWND core = FindWindowExW(wnd, nullptr, L"Windows.UI.Core.CoreWindow", nullptr)) target = core;
+    } else if (GetGUIThreadInfo(wnd == GetForegroundWindow() ? 0 : GetWindowThreadProcessId(wnd, nullptr), &gti) &&
+               gti.hwndFocus) {
         target = gti.hwndFocus;
+    }
     PostMessageW(target, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hkl));
 }
 
 // Ждём, пока окно действительно переключится на нужную раскладку.
 static bool WaitForLayout(HWND wnd, HKL hkl, int timeoutMs) {
-    const DWORD tid = GetWindowThreadProcessId(wnd, nullptr);
     for (int t = 0; t <= timeoutMs; t += 10) {
-        if (GetKeyboardLayout(tid) == hkl) return true;
+        if (WindowLayout(wnd) == hkl) return true;
         Sleep(10);
     }
     return false;
@@ -719,16 +747,33 @@ static HKL DetectLayout(const std::wstring& text, HKL fallback) {
     return best;
 }
 
+// Оставить знак таким, как его набрали, или перевести по клавише?
+// Знаки переводятся по клавишам, как набирал пользователь: «Ghbdtn?» -> «Привет,»
+// (в русской раскладке на этой клавише запятая), «ltkf&» -> «дела?».
+// Исключение: если в новой раскладке на клавише знака стоит буква («,» -> «б», «.» -> «ю»):
+//   внутри слова это буква («lj,hsq» -> «добрый»),
+//   а на краю слова обычный знак препинания остаётся как есть («Ghbdtn, rfr» -> «Привет, как»).
+static bool KeepTypedSymbol(wchar_t typed, wchar_t conv, wchar_t prev, wchar_t next) {
+    if (IsCharAlphaNumericW(typed)) return false;
+    if (!IsCharAlphaW(conv)) return false;                                         // знак -> знак: по клавише
+    if (prev && next && IsCharAlphaW(prev) && IsCharAlphaW(next)) return false;   // внутри слова: буква
+    static const wchar_t kPunct[] = L",.;:'\"";
+    for (const wchar_t* p = kPunct; *p; ++p)
+        if (*p == typed) return true;
+    return false;
+}
+
 static std::wstring ConvertText(const std::wstring& text, HKL src, HKL dst) {
     std::wstring out;
     out.reserve(text.size());
-    for (wchar_t c : text) {
+    for (size_t i = 0; i < text.size(); ++i) {
+        const wchar_t c = text[i];
         if (c == L'\r' || c == L'\n' || c == L'\t' || c == L' ') { out += c; continue; }
         SHORT r = VkKeyScanExW(c, src);
         if (r == -1 || (HIBYTE(r) & 6)) { out += c; continue; }
         std::wstring s = KeyToText(LOBYTE(r), (HIBYTE(r) & 1) != 0, false, dst);
-        // Знак, который и в новой раскладке остаётся знаком, не трогаем: «?» остаётся «?».
-        if (s.empty() || (!IsCharAlphaNumericW(c) && s.size() == 1 && !IsCharAlphaNumericW(s[0])))
+        const wchar_t prev = i > 0 ? text[i - 1] : 0, next = i + 1 < text.size() ? text[i + 1] : 0;
+        if (s.empty() || (s.size() == 1 && KeepTypedSymbol(c, s[0], prev, next)))
             out += c;
         else
             out += s;
@@ -1018,15 +1063,19 @@ static void ConvertLastWord() {
     HKL dst = NextLayout(src);
     if (!dst) { MessageBeep(MB_ICONWARNING); return; }
 
-    // Буквы конвертируем по клавишам, а знаки оставляем теми, что набрал пользователь:
-    // «дела?» -> «ltkf?», а не «ltkf&». Но если в новой раскладке на клавише знака стоит
-    // буква («.» -> «ю», «,» -> «б»), это не знак, а ошибочно набранная буква — конвертируем.
+    // Всё переводим по клавишам («Ghbdtn?» -> «Привет,», «Ns&» -> «Ты?»), кроме запятой, точки
+    // и похожих знаков на краю слова: они не превращаются в «б» и «ю». Подробнее в KeepTypedSymbol.
     std::vector<OutKey> plan;
     std::wstring out;
-    for (const KeyRec& k : seg) {
-        const std::wstring typed = KeyToText(k.vk, k.shift, k.caps, orig);   // что нажимал пользователь
+    std::vector<std::wstring> typedAll;
+    for (const KeyRec& k : seg) typedAll.push_back(KeyToText(k.vk, k.shift, k.caps, orig));
+    for (size_t j = 0; j < seg.size(); ++j) {
+        const KeyRec& k = seg[j];
+        const std::wstring& typed = typedAll[j];                            // что нажимал пользователь
         const std::wstring conv  = KeyToText(k.vk, k.shift, k.caps, dst);    // что даст клавиша в новой раскладке
-        if (IsSymbol(typed) && IsSymbol(conv) && typed != conv) {
+        const wchar_t prev = j > 0 && typedAll[j - 1].size() == 1 ? typedAll[j - 1][0] : 0;
+        const wchar_t next = j + 1 < seg.size() && typedAll[j + 1].size() == 1 ? typedAll[j + 1][0] : 0;
+        if (IsSymbol(typed) && conv.size() == 1 && typed != conv && KeepTypedSymbol(typed[0], conv[0], prev, next)) {
             const SHORT r = VkKeyScanExW(typed[0], dst);
             if (r != -1 && !(HIBYTE(r) & 6)) plan.push_back({ LOBYTE(r), (HIBYTE(r) & 1) != 0, 0 });
             else                             plan.push_back({ 0, false, typed[0] });
@@ -1339,20 +1388,6 @@ static std::wstring HotkeyText(const Hotkey& h) {
 // ---------------------------------------------------------------------------
 // Иконка в трее
 // ---------------------------------------------------------------------------
-
-// Звезда рисуется вручную со сглаживанием (8×8 подвыборок на пиксель).
-
-struct PtF { double x, y; };
-
-static void StarPolygon(PtF* p, double cx, double cy, double outerR, double innerR) {
-    const double pi = 3.14159265358979323846;
-    for (int i = 0; i < 10; ++i) {
-        const double a = -pi / 2 + i * pi / 5;
-        const double rad = (i % 2) ? innerR : outerR;
-        p[i] = { cx + rad * std::cos(a), cy + rad * std::sin(a) };
-    }
-}
-
 
 // Светлая ли тема панели задач Windows.
 static bool IsLightTaskbar() {
@@ -2060,14 +2095,49 @@ static void DrawRowIcon(Gdiplus::Graphics& g, int kind, float x, float y, const 
     g.Restore(st);
 }
 
-static void DrawStarShape(Gdiplus::Graphics& g, float cx, float cy, float r, const Gdiplus::Color& c) {
-    PtF p[10];
-    StarPolygon(p, cx, cy, r, r * 0.382);
-    Gdiplus::PointF q[10];
-    for (int i = 0; i < 10; ++i) q[i] = Gdiplus::PointF(static_cast<float>(p[i].x), static_cast<float>(p[i].y));
-    Gdiplus::SolidBrush b(c);
-    g.FillPolygon(&b, q, 10);
+// Клавиша KS для окон программы: та же клавиша, что в иконке exe, но нарисованная векторно
+// и в «плоском» стиле окон (без тени и тяжёлой рамки), чтобы была чёткой при любом масштабе.
+static void DrawAppIcon(Gdiplus::Graphics& g, float x, float y, float size) {
+    using namespace Gdiplus;
+    const float u = size / 64.0f;   // рисуем в сетке 64×64
+    const bool dark = g_setDark;
+    // Корпус
+    {
+        GraphicsPath p;
+        AddRoundRect(p, RectF(x, y, size, size), 14 * u);
+        LinearGradientBrush br(PointF(0, y), PointF(0, y + size),
+                               dark ? Color(255, 120, 124, 132) : Color(255, 226, 229, 234),
+                               dark ? Color(255, 78, 81, 88) : Color(255, 188, 193, 201));
+        g.FillPath(&br, &p);
+        Pen edge(dark ? Color(255, 60, 62, 68) : Color(255, 172, 177, 186), std::max(1.0f, u));
+        GraphicsPath pe;
+        AddRoundRect(pe, RectF(x + 0.5f * u, y + 0.5f * u, size - u, size - u), 13.5f * u);
+        g.DrawPath(&edge, &pe);
+    }
+    // Верхняя площадка, утопленная в корпус
+    const RectF top(x + 6.5f * u, y + 3.5f * u, size - 13 * u, size - 15 * u);
+    {
+        GraphicsPath p;
+        AddRoundRect(p, top, 10 * u);
+        LinearGradientBrush br(PointF(0, top.Y), PointF(0, top.GetBottom()),
+                               dark ? Color(255, 150, 154, 162) : Color(255, 252, 252, 253),
+                               dark ? Color(255, 128, 132, 140) : Color(255, 238, 240, 243));
+        g.FillPath(&br, &p);
+        LinearGradientBrush rim(PointF(0, top.Y), PointF(0, top.GetBottom()),
+                                Color(dark ? 70 : 40, 0, 0, 0), Color(dark ? 40 : 230, 255, 255, 255));
+        Pen rp(&rim, std::max(1.0f, 1.2f * u));
+        g.DrawPath(&rp, &p);
+    }
+    // Буквы
+    Font* f = SetFont(22.5f * u, false, true);
+    StringFormat sf(StringFormat::GenericTypographic());
+    sf.SetAlignment(StringAlignmentCenter);
+    sf.SetLineAlignment(StringAlignmentCenter);
+    SolidBrush tb(dark ? Color(255, 255, 255, 255) : Color(255, 42, 44, 49));
+    g.DrawString(L"KS", -1, f, RectF(top.X, top.Y + 0.5f * u, top.Width, top.Height), &sf, &tb);
+    delete f;
 }
+
 
 static void DrawToggle(Gdiplus::Graphics& g, const SetColors& c, float x, float y, bool on) {
     using namespace Gdiplus;
@@ -2402,7 +2472,7 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
             Pen p(c.line, 1);
             g.DrawLine(&p, 0.0f, ST_TITLE - 0.5f, W, ST_TITLE - 0.5f);
         }
-        DrawStarShape(g, 22 + 15, 20 + 15, 15, c.red);
+        DrawAppIcon(g, 20, 18, 34);
         TextAt(g, L"KeySwitch", fH1, c.text, 64, 14, 28);
         TextAt(g, T(S_SUBTITLE), fSub, c.sub, 64, 40, 20);
         // Свернуть и закрыть
@@ -2862,7 +2932,7 @@ static void AboutPaint(Gdiplus::Graphics& g, float W, float H) {
         g_aboutHits.push_back({ RectF(bx, by, bw, bh), AB_CLOSE, false });
     }
     // Звезда, название, версия
-    DrawStarShape(g, W / 2, 56, 28, c.red);
+    DrawAppIcon(g, W / 2 - 32, 22, 64);
     SolidBrush tb(c.text), sb(c.sub);
     g.DrawString(L"KeySwitch", -1, fTitle, RectF(0, 96, W, 34), &center, &tb);
     const std::wstring ver = std::wstring(T(S_ABOUT_VERSION)) + (L"" KS_VERSION_STR) + L" \u00B7 " + (L"" KS_BUILD_STR);

@@ -2,6 +2,6 @@
 #pragma once
 #define KS_VER_MAJOR 1
 #define KS_VER_MINOR 5
-#define KS_VER_PATCH 4
-#define KS_VERSION_STR "1.5.4"
-#define KS_BUILD_STR   "2026.10.29"
+#define KS_VER_PATCH 5
+#define KS_VERSION_STR "1.5.5"
+#define KS_BUILD_STR   "2026.10.30"

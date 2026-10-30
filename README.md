@@ -22,7 +22,7 @@ All the code is in one file of about 3,700 lines, with no third-party libraries.
 
 ## Tiny
 
-One 370 KB file. No installation, no frameworks, no background services. About 3 MB of memory and 0% CPU while you're not pressing anything.
+One 410 KB file. No installation, no frameworks, no background services. About 3 MB of memory and 0% CPU while you're not pressing anything.
 
 ## Why no dictionaries
 
@@ -44,7 +44,7 @@ Regular Caps Lock is `Shift+Caps Lock`. Every hotkey can be changed in Settings.
 
 ## What else it does
 
-- **Leaves punctuation alone.** Letters are converted, symbols stay as typed: `дела?` → `ltkf?`.
+- **Converts punctuation by key, as you pressed it.** `Ghbdtn?` → `Привет,`, `Rfr ltkf&` → `Как дела?`. A comma or period at the end of a word stays as is: `Ghbdtn, rfr` → `Привет, как`.
 - **Press again to cycle.** The word moves to the next layout, and the case goes lower → Sentence case → UPPER.
 - **Keep typing right away.** After a fix the cursor sits at the end of the text.
 - **The layout in the tray.** RU in red, EN in black (white on a dark taskbar), grey when KeySwitch is off. Hover over it to see all layouts and switch with a click.
