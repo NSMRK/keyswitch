@@ -86,7 +86,23 @@ KeySwitch sees your keystrokes, otherwise it couldn't know which word to fix. Th
 
 - there's no networking code: it sends nothing and never checks for updates;
 - only the keys of the current word in the current window are kept in memory, and they're cleared on Enter, a mouse click or a window change;
+- in password fields it keeps nothing at all and fixes nothing (in the fields Windows can recognize as password fields: regular programs and browsers);
 - the only file it writes is the settings file: `%APPDATA%\KeySwitch\config.ini`.
+
+</details>
+
+<details>
+<summary><b>More than two layouts</b></summary>
+
+KeySwitch works with all layouts installed in Windows and goes through them in the same order as Windows does.
+
+- **Caps Lock** switches to the next layout: EN → RU → UA → EN.
+- **Pause** moves the word to the next layout in the list. Press again to go further.
+- **Ctrl+Pause** finds out which layout the selected text was typed in and moves it to the next one.
+
+So the order matters. If your list is EN, RU, UA, then `ghbdtn` + Pause gives `привет` right away. If it is EN, UA, RU, the first press gives the Ukrainian variant and the second gives `привет`. To change the order, open Windows Settings → Time & language → Language & region and drag the languages.
+
+In the tray, English is shown in black (white on a dark taskbar), any other layout in red: RU, UA, DE and so on.
 
 </details>
 

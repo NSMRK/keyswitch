@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.6 (2026-10-31)
+- **Fixes TWo capitals.** Typed `ПРивет` or `HEllo` and pressed Space? KeySwitch turns it into `Привет` or `Hello`. Press Backspace right after the fix to undo it: the word comes back as typed and KeySwitch remembers it (for example `ВКонтакте`). Remembered words are listed in Settings and can be removed there. Short words like `IDs` and `ПК` are never touched. Can be turned off in Settings.
+- **Password fields are left alone.** In a password field KeySwitch keeps nothing in memory and fixes nothing, Pause included. Caps Lock still switches the layout. Works in the fields Windows can recognize as password fields: regular programs and browsers.
+- Ukrainian is shown as **UA** instead of UK, so it is not confused with the United Kingdom. The letters are drawn pixel by pixel, like RU and EN.
+- The settings file is now stored in Unicode, so words in any language are kept correctly.
+- Keys like `"`, `<`, `.` and `,` at the start or in the middle of a word are now letters: `"nj` becomes `Это`, `<.dtn` becomes `Бювет`. At the end of a word a comma or period still stays as is.
+
 ## 1.5.5 (2026-10-30)
 - New app icon: a grey keyboard key with KS. It replaces the star in Explorer, Task Manager, the taskbar, Settings and About.
 - Punctuation is converted by key, just as you typed it: `Ghbdtn?` becomes `Привет,` and `Rfr ltkf&` becomes `Как дела?`. A comma or period at the end of a word stays as is and no longer turns into «б» or «ю»: `Ghbdtn, rfr` becomes `Привет, как`. Inside a word such keys are letters: `lj,hsq` becomes `добрый`.

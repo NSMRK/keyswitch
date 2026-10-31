@@ -39,6 +39,7 @@
 #include <objidl.h>
 #include <gdiplus.h>
 #include <uxtheme.h>
+#include <oleacc.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -74,6 +75,8 @@ enum : UINT {
     WMU_FLYHIDE,             // хук: нажата клавиша, пока открыта панель раскладок
     WMU_FLYCLICK,            // хук: клик мышью, пока открыта панель (wParam=x, lParam=y)
     WMU_OPENSET,             // хук или второй запуск: открыть настройки
+    WMU_DCFIX,               // хук: исправить ДВе заглавные в только что набранном слове
+    WMU_DCUNDO,              // хук: Backspace сразу после исправления, вернуть как было
 };
 
 enum {
@@ -168,7 +171,7 @@ enum StrId {
     S_LBL_LANG, S_LANG_AUTO,
     S_LBL_ICON, S_ICON_SQUARE, S_ICON_LETTERS, S_ICON_STAR, S_ICON_HIDDEN, S_LBL_SET, S_HIDDEN_INFO,
     S_SUBTITLE, S_SEC_CURRENT, S_SEC_HOTKEYS, S_SEC_GENERAL, S_SEC_EXCL, S_ROW_WORD, S_ROW_SEL, S_ROW_CASE, S_ROW_SET,
-    S_ROW_SOUND, S_ROW_SHOWICON, S_ROW_ICONSTYLE, S_SEG_LETTERS, S_LBL_LANG2, S_ADD, S_FOOT, S_PRESS_SHORT, S_HIDDEN_HINT, S_ABOUT_CONTACT, S_ABOUT_VERSION, S_ABOUT_CODE, S_ABOUT_CHAT,
+    S_ROW_SOUND, S_ROW_SHOWICON, S_ROW_ICONSTYLE, S_SEG_LETTERS, S_LBL_LANG2, S_ADD, S_FOOT, S_PRESS_SHORT, S_HIDDEN_HINT, S_ABOUT_CONTACT, S_ABOUT_VERSION, S_ABOUT_CODE, S_ABOUT_CHAT, S_ROW_DCAPS, S_DCAPS_HINT, S_SEC_DCAPS, S_DCAPS_EMPTY,
     S_FLY_TITLE, S_FLY_FIX, S_FLY_SETTINGS, S_FLY_OFF,
     S_COUNT
 };
@@ -252,6 +255,11 @@ static const LocStr kStrings[S_COUNT] = {
     /* S_ABOUT_VERSION   */ { L"Версия ", L"Version " },
     /* S_ABOUT_CODE      */ { L"Исходный код", L"Source code" },
     /* S_ABOUT_CHAT      */ { L"Написать автору", L"Message the author" },
+    /* S_ROW_DCAPS       */ { L"Исправлять ДВе заглавные", L"Fix TWo capitals" },
+    /* S_DCAPS_HINT      */ { L"ПРивет → Привет. Отменить: сразу Backspace", L"HEllo → Hello. To undo: Backspace right away" },
+    /* S_SEC_DCAPS       */ { L"Не исправлять ДВе заглавные в словах", L"Keep TWo capitals in these words" },
+    /* S_DCAPS_EMPTY     */ { L"Пока пусто. Слово попадёт сюда, если отменить исправление клавишей Backspace.",
+                              L"Empty for now. A word is added here when you undo its fix with Backspace." },
     /* S_FLY_TITLE       */ { L"Раскладка", L"Keyboard layout" },
     /* S_FLY_FIX         */ { L"Исправить слово: ", L"Fix word: " },
     /* S_FLY_SETTINGS    */ { L"Настройки", L"Settings" },
@@ -308,8 +316,62 @@ static UINT CurrentMods() {
     return m;
 }
 
+// «ДВе заглавные»: «ПРивет» + пробел -> «Привет ». Backspace сразу после исправления отменяет
+// его и запоминает слово как исключение.
+static volatile LONG g_fixDCaps = 1;
+static volatile LONG g_inPassword = 0;   // фокус в поле пароля (обновляет главный поток)
+static std::vector<std::wstring> g_dcExcept;            // слова-исключения (как набраны), под g_cs
+static const wchar_t* const kDcBuiltin[] = { L"ВКонтакте" };
+struct DcUndo {
+    bool active = false;
+    HWND wnd = nullptr;
+    std::vector<KeyRec> orig, fixed;   // слово как набрано и как исправлено
+    std::wstring word;                 // слово как набрано (для исключений)
+};
+static DcUndo g_dc;                    // под g_cs
+
+static std::wstring KeyToText(UINT vk, bool shift, bool caps, HKL hkl);
+static HKL WindowLayout(HWND wnd);
+
+static bool IsDcException(const std::wstring& w) {
+    for (const wchar_t* b : kDcBuiltin)
+        if (w == b) return true;
+    for (const std::wstring& e : g_dcExcept)
+        if (w == e) return true;
+    return false;
+}
+
+// Проверить слово перед пробелом (вызывается из хука под g_cs). true: слово исправлено в буфере.
+static bool CheckDoubleCapsLocked(HWND fg) {
+    if (!g_fixDCaps) return false;
+    size_t i = g_buf.size();
+    while (i > 0 && g_buf[i - 1].vk != VK_SPACE) --i;
+    const size_t n = g_buf.size() - i;
+    if (n < 4 || n > 40) return false;
+    const HKL hkl = WindowLayout(fg);
+    std::wstring word;
+    for (size_t j = i; j < g_buf.size(); ++j) {
+        const std::wstring t = KeyToText(g_buf[j].vk, g_buf[j].shift, g_buf[j].caps, hkl);
+        if (t.size() != 1 || !IsCharAlphaW(t[0])) return false;
+        word += t;
+    }
+    // Две первые заглавные, дальше только строчные (минимум две): «ПРивет», но не «IDs» и не «ПК».
+    if (!IsCharUpperW(word[0]) || !IsCharUpperW(word[1])) return false;
+    for (size_t j = 2; j < word.size(); ++j)
+        if (!IsCharLowerW(word[j])) return false;
+    if (IsDcException(word)) return false;
+    g_dc.active = true;
+    g_dc.wnd = fg;
+    g_dc.word = word;
+    g_dc.orig.assign(g_buf.begin() + static_cast<std::ptrdiff_t>(i), g_buf.end());
+    g_buf[i + 1].shift = g_buf[i + 1].caps;   // строчная: Shift совпадает с Caps Lock
+    g_dc.fixed.assign(g_buf.begin() + static_cast<std::ptrdiff_t>(i), g_buf.end());
+    return true;
+}
+
 static void ResetBufferLocked() {
     g_buf.clear();
+    g_dc.active = false;
     g_repeat = false;
     g_selRepeat = false;
 }
@@ -446,6 +508,12 @@ static LRESULT CALLBACK KeyboardProc(int code, WPARAM wp, LPARAM lp) {
         return 1;
     }
 
+    // Поле пароля: ничего не запоминаем и не исправляем, клавиши (и Pause тоже) идут в программу как есть.
+    if (g_inPassword) {
+        ResetBuffer();
+        return CallNextHookEx(nullptr, code, wp, lp);
+    }
+
     Hotkey hw, hs, hc;
     EnterCriticalSection(&g_cs);
     hw = g_hkWord;
@@ -463,6 +531,28 @@ static LRESULT CALLBACK KeyboardProc(int code, WPARAM wp, LPARAM lp) {
     if (fg != g_bufWnd) {
         ResetBufferLocked();
         g_bufWnd = fg;
+    }
+    // Backspace сразу после исправления ДВух заглавных: вернуть как было.
+    if (vk == VK_BACK && mods == 0 && g_dc.active && g_dc.wnd == fg) {
+        g_dc.active = false;
+        if (!g_dc.word.empty() && !IsDcException(g_dc.word)) g_dcExcept.push_back(g_dc.word);   // больше не исправлять
+        if (!g_buf.empty() && g_buf.back().vk == VK_SPACE) g_buf.pop_back();
+        if (g_buf.size() >= g_dc.orig.size())
+            std::copy(g_dc.orig.begin(), g_dc.orig.end(), g_buf.end() - static_cast<std::ptrdiff_t>(g_dc.orig.size()));
+        LeaveCriticalSection(&g_cs);
+        g_swallowUp = vk;
+        PostMessageW(g_mainWnd, WMU_DCUNDO, 0, 0);
+        return 1;
+    }
+    if (!IsModifierKey(vk)) g_dc.active = false;
+    // Пробел после «ПРивет»: исправляем.
+    if (vk == VK_SPACE && mods == 0 && CheckDoubleCapsLocked(fg)) {
+        g_buf.push_back({ VK_SPACE, false, (GetKeyState(VK_CAPITAL) & 1) != 0 });
+        g_repeat = false;
+        LeaveCriticalSection(&g_cs);
+        g_swallowUp = vk;
+        PostMessageW(g_mainWnd, WMU_DCFIX, 0, 0);
+        return 1;
     }
     if (IsModifierKey(vk)) {
         // ничего
@@ -747,16 +837,18 @@ static HKL DetectLayout(const std::wstring& text, HKL fallback) {
     return best;
 }
 
+static bool IsSpaceChar(wchar_t c) { return c == L' ' || c == L'\t' || c == L'\r' || c == L'\n'; }
+
 // Оставить знак таким, как его набрали, или перевести по клавише?
 // Знаки переводятся по клавишам, как набирал пользователь: «Ghbdtn?» -> «Привет,»
 // (в русской раскладке на этой клавише запятая), «ltkf&» -> «дела?».
-// Исключение: если в новой раскладке на клавише знака стоит буква («,» -> «б», «.» -> «ю»):
-//   внутри слова это буква («lj,hsq» -> «добрый»),
-//   а на краю слова обычный знак препинания остаётся как есть («Ghbdtn, rfr» -> «Привет, как»).
-static bool KeepTypedSymbol(wchar_t typed, wchar_t conv, wchar_t prev, wchar_t next) {
+// Исключение: если в новой раскладке на клавише знака стоит буква («,» -> «б», «.» -> «ю», «"» -> «Э»):
+//   если дальше в слове есть буквы, это буква («lj,hsq» -> «добрый», «"nj» -> «Это», «<.dtn» -> «Бювет»);
+//   если знак стоит в конце слова, обычный знак препинания остаётся как есть («Ghbdtn, rfr» -> «Привет, как»).
+static bool KeepTypedSymbol(wchar_t typed, wchar_t conv, bool letterAfter) {
     if (IsCharAlphaNumericW(typed)) return false;
-    if (!IsCharAlphaW(conv)) return false;                                         // знак -> знак: по клавише
-    if (prev && next && IsCharAlphaW(prev) && IsCharAlphaW(next)) return false;   // внутри слова: буква
+    if (!IsCharAlphaW(conv)) return false;   // знак -> знак: по клавише
+    if (letterAfter) return false;           // начало или середина слова: буква
     static const wchar_t kPunct[] = L",.;:'\"";
     for (const wchar_t* p = kPunct; *p; ++p)
         if (*p == typed) return true;
@@ -772,8 +864,10 @@ static std::wstring ConvertText(const std::wstring& text, HKL src, HKL dst) {
         SHORT r = VkKeyScanExW(c, src);
         if (r == -1 || (HIBYTE(r) & 6)) { out += c; continue; }
         std::wstring s = KeyToText(LOBYTE(r), (HIBYTE(r) & 1) != 0, false, dst);
-        const wchar_t prev = i > 0 ? text[i - 1] : 0, next = i + 1 < text.size() ? text[i + 1] : 0;
-        if (s.empty() || (s.size() == 1 && KeepTypedSymbol(c, s[0], prev, next)))
+        bool letterAfter = false;   // есть ли дальше в этом слове буквы
+        for (size_t j = i + 1; j < text.size() && !IsSpaceChar(text[j]); ++j)
+            if (IsCharAlphaW(text[j])) { letterAfter = true; break; }
+        if (s.empty() || (s.size() == 1 && KeepTypedSymbol(c, s[0], letterAfter)))
             out += c;
         else
             out += s;
@@ -1073,9 +1167,10 @@ static void ConvertLastWord() {
         const KeyRec& k = seg[j];
         const std::wstring& typed = typedAll[j];                            // что нажимал пользователь
         const std::wstring conv  = KeyToText(k.vk, k.shift, k.caps, dst);    // что даст клавиша в новой раскладке
-        const wchar_t prev = j > 0 && typedAll[j - 1].size() == 1 ? typedAll[j - 1][0] : 0;
-        const wchar_t next = j + 1 < seg.size() && typedAll[j + 1].size() == 1 ? typedAll[j + 1][0] : 0;
-        if (IsSymbol(typed) && conv.size() == 1 && typed != conv && KeepTypedSymbol(typed[0], conv[0], prev, next)) {
+        bool letterAfter = false;   // есть ли дальше в этом слове буквы
+        for (size_t q = j + 1; q < seg.size() && seg[q].vk != VK_SPACE; ++q)
+            if (typedAll[q].size() == 1 && IsCharAlphaW(typedAll[q][0])) { letterAfter = true; break; }
+        if (IsSymbol(typed) && conv.size() == 1 && typed != conv && KeepTypedSymbol(typed[0], conv[0], letterAfter)) {
             const SHORT r = VkKeyScanExW(typed[0], dst);
             if (r != -1 && !(HIBYTE(r) & 6)) plan.push_back({ LOBYTE(r), (HIBYTE(r) & 1) != 0, 0 });
             else                             plan.push_back({ 0, false, typed[0] });
@@ -1221,6 +1316,34 @@ static std::wstring ConfigPath() {
     return dir + L"\\config.ini";
 }
 
+// Файл настроек в UTF-16 (с BOM): тогда Windows хранит в нём любые буквы, например русские слова
+// в исключениях, независимо от языка системы. Старый файл (ANSI) переводим один раз.
+static void EnsureUnicodeConfig(const std::wstring& p) {
+    HANDLE f = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    std::string data;
+    if (f != INVALID_HANDLE_VALUE) {
+        char buf[4096];
+        DWORD rd = 0;
+        while (ReadFile(f, buf, sizeof(buf), &rd, nullptr) && rd) data.append(buf, rd);
+        CloseHandle(f);
+        if (data.size() >= 2 && static_cast<unsigned char>(data[0]) == 0xFF && static_cast<unsigned char>(data[1]) == 0xFE)
+            return;   // уже UTF-16
+    }
+    std::wstring text;
+    if (!data.empty()) {
+        const int n = MultiByteToWideChar(CP_ACP, 0, data.data(), static_cast<int>(data.size()), nullptr, 0);
+        text.resize(static_cast<size_t>(n));
+        MultiByteToWideChar(CP_ACP, 0, data.data(), static_cast<int>(data.size()), &text[0], n);
+    }
+    f = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    const wchar_t bom = 0xFEFF;
+    DWORD wr = 0;
+    WriteFile(f, &bom, sizeof(bom), &wr, nullptr);
+    if (!text.empty()) WriteFile(f, text.data(), static_cast<DWORD>(text.size() * sizeof(wchar_t)), &wr, nullptr);
+    CloseHandle(f);
+}
+
 // Разобрать список исключений: по одному на строку или через «;». «chrome» -> «chrome.exe».
 static std::vector<std::wstring> ParseExclusions(const std::wstring& text) {
     std::vector<std::wstring> out;
@@ -1265,6 +1388,7 @@ static Hotkey ReadHotkey(const std::wstring& p, const wchar_t* vkKey, const wcha
 
 static void LoadConfig() {
     const std::wstring p = ConfigPath();
+    EnsureUnicodeConfig(p);
     const Hotkey w = ReadHotkey(p, L"word_vk", L"word_mods", { VK_PAUSE, 0 });
     const int ver = static_cast<int>(GetPrivateProfileIntW(L"options", L"config_version", 1, p.c_str()));
     // До версии 1.4 по умолчанию было: выделение Shift+Pause, регистр Ctrl+Pause.
@@ -1287,6 +1411,20 @@ static void LoadConfig() {
     if (g_langMode < LANG_MODE_AUTO || g_langMode > LANG_MODE_RU) g_langMode = LANG_MODE_AUTO;
     ApplyUiLanguage();
     g_trayHidden = GetPrivateProfileIntW(L"options", L"tray_hidden", 0, p.c_str()) != 0;
+    InterlockedExchange(&g_fixDCaps, GetPrivateProfileIntW(L"options", L"fix_double_caps", 1, p.c_str()) ? 1 : 0);
+    {
+        wchar_t dc[4096] = {};
+        GetPrivateProfileStringW(L"options", L"double_caps_exceptions", L"", dc, ARRAYSIZE(dc), p.c_str());
+        std::vector<std::wstring> list;
+        std::wstring cur;
+        for (const wchar_t* q = dc;; ++q) {
+            if (*q == L';' || *q == 0) { if (!cur.empty()) list.push_back(cur); cur.clear(); if (!*q) break; }
+            else cur += *q;
+        }
+        EnterCriticalSection(&g_cs);
+        g_dcExcept = list;
+        LeaveCriticalSection(&g_cs);
+    }
     if (GetPrivateProfileIntW(L"options", L"tray_icon", 0, p.c_str()) == 2) g_trayHidden = true;   // 1.4.5: «скрыт» был видом значка
     const Hotkey st = ReadHotkey(p, L"settings_vk", L"settings_mods", Hotkey{ VK_PAUSE, MOD_CONTROL | MOD_SHIFT });
 
@@ -1331,6 +1469,14 @@ static void SaveConfig() {
     put(L"options", L"language", static_cast<UINT>(g_langMode));
     WritePrivateProfileStringW(L"options", L"tray_icon", nullptr, p.c_str());   // вид значка больше не выбирается
     put(L"options", L"tray_hidden", g_trayHidden ? 1 : 0);
+    put(L"options", L"fix_double_caps", g_fixDCaps ? 1 : 0);
+    {
+        std::wstring dc;
+        EnterCriticalSection(&g_cs);
+        for (const std::wstring& w : g_dcExcept) dc += (dc.empty() ? L"" : L";") + w;
+        LeaveCriticalSection(&g_cs);
+        WritePrivateProfileStringW(L"options", L"double_caps_exceptions", dc.c_str(), p.c_str());
+    }
     put(L"options", L"config_version", 4);
     WritePrivateProfileStringW(L"options", L"exclude", excl.c_str(), p.c_str());
 }
@@ -1418,7 +1564,10 @@ static std::wstring LayoutCode(HKL hkl) {
         for (const wchar_t* c = name; *c && *c != L'-' && code.size() < 3; ++c) code += *c;
     }
     if (code.empty()) code = L"??";
-    return ToUpperW(code);
+    code = ToUpperW(code);
+    // Украинский по стандарту «uk», но «UK» легко принять за Великобританию: показываем UA.
+    if (code == L"UK") code = L"UA";
+    return code;
 }
 
 static std::wstring LocaleInfo(HKL hkl, LCTYPE type) {
@@ -1558,7 +1707,7 @@ struct LetterCanvas {
 static int RoundI(double v) { return static_cast<int>(std::floor(v + 0.5)); }
 
 // Ширина буквы при высоте значка 16 px (для других размеров пропорционально).
-static int LetterWidth16(wchar_t ch) { return ch == L'E' ? 6 : 7; }
+static int LetterWidth16(wchar_t ch) { return ch == L'E' ? 6 : (ch == L'A' ? 8 : 7); }
 
 static void DrawLetter(LetterCanvas& cv, wchar_t ch, double x, double y, double h, double w, double wd) {
     static const bool kBottom[4] = { false, false, true, true },
@@ -1579,6 +1728,15 @@ static void DrawLetter(LetterCanvas& cv, wchar_t ch, double x, double y, double 
         const double r = std::min(wd / 2, h * 0.32);
         cv.RRect(x, y, x + wd, y + h, r, kBottom);
         cv.RRect(x + w, y - 1, x + wd - w, y + h - w, std::max(0.01, r - w), kBottom, 0);
+    } else if (ch == L'A') {
+        // Две наклонные ножки и перекладина; вершина чуть срезана, чтобы не было острия.
+        const double t = w * 1.2, cx = x + wd / 2.0;
+        const double lp[4] = { cx - t / 2, cx + t / 2, x + t, x }, lpy[4] = { y, y, y + h, y + h };
+        cv.Quad(lp, lpy);
+        const double rp[4] = { cx - t / 2, cx + t / 2, x + wd, x + wd - t }, rpy[4] = { y, y, y + h, y + h };
+        cv.Quad(rp, rpy);
+        const double by = y + RoundI(h * 0.62);
+        cv.Rect(x + wd * 0.22, by, x + wd * 0.78, by + w);
     } else if (ch == L'R') {
         const double bh = RoundI(h * 0.56);
         const double r = std::min(bh / 2, wd * 0.45);
@@ -1594,7 +1752,7 @@ static void DrawLetter(LetterCanvas& cv, wchar_t ch, double x, double y, double 
 static bool HasDrawnLetters(const std::wstring& code) {
     if (code.empty()) return false;
     for (wchar_t c : code)
-        if (c != L'E' && c != L'N' && c != L'R' && c != L'U') return false;
+        if (c != L'E' && c != L'N' && c != L'R' && c != L'U' && c != L'A') return false;
     return true;
 }
 
@@ -1890,10 +2048,11 @@ enum {
 enum SetItem {
     IT_NONE = 0, IT_MIN, IT_CLOSE,
     IT_HK0, IT_HK1, IT_HK2, IT_HK3,
-    IT_CAPS, IT_AUTO, IT_SOUND, IT_GAMES, IT_SHOWICON,
+    IT_CAPS, IT_AUTO, IT_SOUND, IT_GAMES, IT_SHOWICON, IT_DCAPS,
     IT_LANG, IT_ADD, IT_GITHUB,
     IT_CHIP = 100,   // крестик у программы-исключения: IT_CHIP + номер
     IT_LAYOUT = 200, // карточка раскладки: IT_LAYOUT + номер
+    IT_DCWORD = 300, // крестик у слова-исключения ДВух заглавных: IT_DCWORD + номер
 };
 
 struct SetHit { Gdiplus::RectF r; int id; bool scrolls; };
@@ -2343,7 +2502,7 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
     {
         const bool hidden = g_trayHidden;
         const float hShow = hidden ? ST_ROW2 : ST_ROW;
-        const float h = ST_ROW * 4 + hShow;
+        const float h = ST_ROW * 4 + ST_ROW2 + hShow;
         card(y, h);
         float yy = y;
         struct Tg { int id; int icon; const wchar_t* text; bool on; };
@@ -2360,6 +2519,13 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
             hit(L, yy, CW, ST_ROW, tgs[i].id);
             yy += ST_ROW;
         }
+        // Исправлять ДВе заглавные
+        sep(yy);
+        hoverBg(yy, ST_ROW2, IT_DCAPS, false, false);
+        rowLabel(yy, ST_ROW2, ICO_KEYB, T(S_ROW_DCAPS), T(S_DCAPS_HINT), CW - 120);
+        DrawToggle(g, c, L + CW - 56, yy + (ST_ROW2 - 20) / 2, g_fixDCaps != 0);
+        hit(L, yy, CW, ST_ROW2, IT_DCAPS);
+        yy += ST_ROW2;
         // Показывать значок в трее
         sep(yy);
         hoverBg(yy, hShow, IT_SHOWICON, false, false);
@@ -2437,6 +2603,49 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
         TextAt(g, addText, fPill, c.accent, addX + 8, ay, chipH);
         hit(addX, ay, addW, chipH, IT_ADD);
         y += h;
+    }
+
+    // Не исправлять ДВе заглавные
+    y += 6;
+    h2(T(S_SEC_DCAPS));
+    {
+        std::vector<std::wstring> words;
+        EnterCriticalSection(&g_cs);
+        words = g_dcExcept;
+        LeaveCriticalSection(&g_cs);
+        const float chipH = 30, gap = 8, padX = 14, padY = 12;
+        if (words.empty()) {
+            const float h = 48;
+            card(y, h);
+            TextAt(g, T(S_DCAPS_EMPTY), fSmall, c.sub, L + padX, y, h, CW - 2 * padX);
+            y += h;
+        } else {
+            struct Pos { float x, row, w; };
+            std::vector<Pos> pos;
+            float x = L + padX, row = 0;
+            for (const std::wstring& w : words) {
+                const float cw = TextW(g, w, fPill) + 12 + 26;
+                if (x + cw > L + CW - padX && x > L + padX) { x = L + padX; ++row; }
+                pos.push_back({ x, row, cw });
+                x += cw + gap;
+            }
+            const float h = padY * 2 + (row + 1) * chipH + row * gap;
+            card(y, h);
+            for (size_t i = 0; i < words.size(); ++i) {
+                const float cy = y + padY + pos[i].row * (chipH + gap);
+                FillRound(g, c.chip, pos[i].x, cy, pos[i].w, chipH, 6);
+                TextAt(g, words[i], fPill, c.text, pos[i].x + 12, cy, chipH);
+                const int id = IT_DCWORD + static_cast<int>(i);
+                const float xx = pos[i].x + pos[i].w - 15;
+                if (g_setHover == id) {
+                    SolidBrush hb(c.pill);
+                    g.FillEllipse(&hb, xx - 9, cy + chipH / 2 - 9, 18.0f, 18.0f);
+                }
+                DrawCross(g, g_setHover == id ? c.text : c.sub, xx, cy + chipH / 2, 3.5f, 1.4f);
+                hit(xx - 11, cy, 22, chipH, id);
+            }
+            y += h;
+        }
     }
 
     // Подвал
@@ -2631,6 +2840,7 @@ static void SettingsClick(HWND wnd, int id) {
     case IT_CAPS:  InterlockedExchange(&g_capsSwitch, g_capsSwitch ? 0 : 1); SaveConfig(); break;
     case IT_SOUND: InterlockedExchange(&g_sound, g_sound ? 0 : 1); SaveConfig(); break;
     case IT_GAMES: InterlockedExchange(&g_autoFull, g_autoFull ? 0 : 1); SaveConfig(); break;
+    case IT_DCAPS: InterlockedExchange(&g_fixDCaps, g_fixDCaps ? 0 : 1); SaveConfig(); break;
     case IT_AUTO:  SetAutostart(!IsAutostart()); break;
     case IT_SHOWICON:
         g_trayHidden = !g_trayHidden;
@@ -2641,7 +2851,13 @@ static void SettingsClick(HWND wnd, int id) {
     case IT_ADD:    ExclAddMenu(wnd, HitScreenPoint(wnd, IT_ADD)); break;
     case IT_GITHUB: ShellExecuteW(nullptr, L"open", GITHUB_URL, nullptr, nullptr, SW_SHOWNORMAL); return;
     default:
-        if (id >= IT_LAYOUT) {
+        if (id >= IT_DCWORD) {
+            const size_t i = static_cast<size_t>(id - IT_DCWORD);
+            EnterCriticalSection(&g_cs);
+            if (i < g_dcExcept.size()) g_dcExcept.erase(g_dcExcept.begin() + static_cast<std::ptrdiff_t>(i));
+            LeaveCriticalSection(&g_cs);
+            SaveConfig();
+        } else if (id >= IT_LAYOUT) {
             // Клик по карточке: переключаем раскладку окна настроек (оно сейчас активное).
             const size_t i = static_cast<size_t>(id - IT_LAYOUT);
             if (i < g_setLayouts.size()) {
@@ -3654,12 +3870,116 @@ static void ShowTrayMenu() {
     SetFocus(g_menuWnd);
 }
 
+// ---------------------------------------------------------------------------
+// Поля пароля. Windows сообщает о каждой смене фокуса; спрашиваем у нового элемента, защищён ли он
+// (так помечаются поля пароля в обычных программах и в браузерах). oleacc.dll грузим по требованию.
+// ---------------------------------------------------------------------------
+
+static bool IsPasswordFocus(HWND hwnd, LONG idObject, LONG idChild) {
+    // Классическое поле Windows со стилем ES_PASSWORD.
+    if (hwnd && (GetWindowLongW(hwnd, GWL_STYLE) & ES_PASSWORD)) {
+        wchar_t cls[32] = {};
+        GetClassNameW(hwnd, cls, ARRAYSIZE(cls));
+        if (lstrcmpiW(cls, L"Edit") == 0) return true;
+    }
+    using FromEventFn = HRESULT (WINAPI*)(HWND, DWORD, DWORD, IAccessible**, VARIANT*);
+    static FromEventFn fromEvent = nullptr;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        if (HMODULE m = LoadLibraryW(L"oleacc.dll"))
+            fromEvent = reinterpret_cast<FromEventFn>(reinterpret_cast<void*>(GetProcAddress(m, "AccessibleObjectFromEvent")));
+    }
+    if (!fromEvent || !hwnd) return false;
+    IAccessible* acc = nullptr;
+    VARIANT child;
+    child.vt = VT_EMPTY;
+    if (FAILED(fromEvent(hwnd, static_cast<DWORD>(idObject), static_cast<DWORD>(idChild), &acc, &child)) || !acc)
+        return false;
+    VARIANT state;
+    state.vt = VT_EMPTY;
+    bool pwd = false;
+    if (SUCCEEDED(acc->get_accState(child, &state)) && state.vt == VT_I4)
+        pwd = (state.lVal & STATE_SYSTEM_PROTECTED) != 0;
+    acc->Release();
+    return pwd;   // child и state здесь числа (VT_I4), освобождать нечего
+}
+
+static void CALLBACK FocusEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD, DWORD) {
+    if (event == EVENT_SYSTEM_FOREGROUND) {
+        InterlockedExchange(&g_inPassword, 0);   // новое окно: дождёмся события фокуса внутри него
+        return;
+    }
+    const bool pwd = IsPasswordFocus(hwnd, idObject, idChild);
+    InterlockedExchange(&g_inPassword, pwd ? 1 : 0);
+    if (pwd) ResetBuffer();
+}
+
+static void StartFocusWatch() {
+    SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, FocusEventProc, 0, 0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS, nullptr, FocusEventProc, 0, 0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+}
+
+// Стереть n символов и «перенажать» клавиши (в темпе живого набора, как при исправлении слова).
+static void RetypeKeys(size_t erase, const std::vector<KeyRec>& keys, bool space) {
+    ReleaseModifiers();
+    std::vector<INPUT> v;
+    for (size_t j = 0; j < erase; ++j) AddTap(v, VK_BACK);
+    SendInputs(v);
+    Sleep(10);
+    for (const KeyRec& k : keys) {
+        std::vector<INPUT> e;
+        // Shift нужен, если нажимали с Shift (Caps Lock остаётся в том же положении, что при наборе).
+        if (k.shift) {
+            AddKey(e, VK_LSHIFT, false); SendInputs(e); e.clear(); Sleep(8);
+            AddTap(e, static_cast<WORD>(k.vk)); SendInputs(e); e.clear(); Sleep(8);
+            AddKey(e, VK_LSHIFT, true); SendInputs(e); Sleep(4);
+        } else {
+            AddTap(e, static_cast<WORD>(k.vk)); SendInputs(e); Sleep(4);
+        }
+    }
+    if (space) {
+        std::vector<INPUT> e;
+        AddTap(e, VK_SPACE);
+        SendInputs(e);
+    }
+}
+
+static void FixDoubleCaps() {
+    std::vector<KeyRec> fixed;
+    EnterCriticalSection(&g_cs);
+    fixed = g_dc.fixed;
+    LeaveCriticalSection(&g_cs);
+    if (fixed.size() < 2) return;
+    // Достаточно перепечатать слово, начиная со второй буквы.
+    std::vector<KeyRec> tail(fixed.begin() + 1, fixed.end());
+    RetypeKeys(tail.size(), tail, true);
+}
+
+static void UndoDoubleCaps() {
+    std::vector<KeyRec> orig;
+    std::wstring word;
+    EnterCriticalSection(&g_cs);
+    orig = g_dc.orig;
+    word = g_dc.word;
+    LeaveCriticalSection(&g_cs);
+    if (orig.size() < 2) return;
+    std::vector<KeyRec> tail(orig.begin() + 1, orig.end());
+    RetypeKeys(tail.size() + 1, tail, false);   // +1: пробел
+    SaveConfig();
+    if (g_settingsWnd) InvalidateRect(g_settingsWnd, nullptr, FALSE);
+}
+
 static LRESULT CALLBACK MainProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WMU_WORD: ConvertLastWord();     return 0;
     case WMU_SEL:  ConvertSelection();    return 0;
     case WMU_CASE: ChangeSelectionCase(); return 0;
     case WMU_OPENSET: HideFlyout(); OpenSettings(); return 0;
+    case WMU_DCFIX:   FixDoubleCaps();  return 0;
+    case WMU_DCUNDO:  UndoDoubleCaps(); return 0;
     case WMU_CAPS: SwitchLayoutByCaps();  return 0;
     case WM_TIMER:
         if (wp == 2) FlyTick();
@@ -3799,6 +4119,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
     CreateFlyout(hi);
     CreateTrayMenu(hi);
     SetTimer(g_mainWnd, 1, 100, nullptr);   // следим за раскладкой активного окна
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);   // для запроса состояния полей (пароль)
+    StartFocusWatch();
 
     HANDLE hookThread = CreateThread(nullptr, 0, HookThread, nullptr, 0, &g_hookThreadId);
 
