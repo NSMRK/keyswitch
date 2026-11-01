@@ -171,7 +171,7 @@ enum StrId {
     S_LBL_LANG, S_LANG_AUTO,
     S_LBL_ICON, S_ICON_SQUARE, S_ICON_LETTERS, S_ICON_STAR, S_ICON_HIDDEN, S_LBL_SET, S_HIDDEN_INFO,
     S_SUBTITLE, S_SEC_CURRENT, S_SEC_HOTKEYS, S_SEC_GENERAL, S_SEC_EXCL, S_ROW_WORD, S_ROW_SEL, S_ROW_CASE, S_ROW_SET,
-    S_ROW_SOUND, S_ROW_SHOWICON, S_ROW_ICONSTYLE, S_SEG_LETTERS, S_LBL_LANG2, S_ADD, S_FOOT, S_PRESS_SHORT, S_HIDDEN_HINT, S_ABOUT_CONTACT, S_ABOUT_VERSION, S_ABOUT_CODE, S_ABOUT_CHAT, S_ROW_DCAPS, S_DCAPS_HINT, S_SEC_DCAPS, S_DCAPS_EMPTY,
+    S_ROW_SOUND, S_ROW_SHOWICON, S_ROW_ICONSTYLE, S_SEG_LETTERS, S_LBL_LANG2, S_ADD, S_FOOT, S_PRESS_SHORT, S_HIDDEN_HINT, S_ABOUT_CONTACT, S_ABOUT_VERSION, S_ABOUT_CODE, S_ABOUT_CHAT, S_ROW_DCAPS, S_DCAPS_HINT, S_SEC_DCAPS, S_DCAPS_EMPTY, S_ROW_DSHIFT, S_DSHIFT_HINT,
     S_FLY_TITLE, S_FLY_FIX, S_FLY_SETTINGS, S_FLY_OFF,
     S_COUNT
 };
@@ -260,6 +260,8 @@ static const LocStr kStrings[S_COUNT] = {
     /* S_SEC_DCAPS       */ { L"Не исправлять ДВе заглавные в словах", L"Keep TWo capitals in these words" },
     /* S_DCAPS_EMPTY     */ { L"Пока пусто. Слово попадёт сюда, если отменить исправление клавишей Backspace.",
                               L"Empty for now. A word is added here when you undo its fix with Backspace." },
+    /* S_ROW_DSHIFT      */ { L"Двойной Shift тоже исправляет слово", L"Double Shift also fixes the word" },
+    /* S_DSHIFT_HINT     */ { L"Если на клавиатуре нет клавиши Pause", L"If your keyboard has no Pause key" },
     /* S_FLY_TITLE       */ { L"Раскладка", L"Keyboard layout" },
     /* S_FLY_FIX         */ { L"Исправить слово: ", L"Fix word: " },
     /* S_FLY_SETTINGS    */ { L"Настройки", L"Settings" },
@@ -319,7 +321,11 @@ static UINT CurrentMods() {
 // «ДВе заглавные»: «ПРивет» + пробел -> «Привет ». Backspace сразу после исправления отменяет
 // его и запоминает слово как исключение.
 static volatile LONG g_fixDCaps = 1;
-static volatile LONG g_inPassword = 0;   // фокус в поле пароля (обновляет главный поток)
+static volatile LONG g_inPassword = 0;
+static volatile LONG g_doubleShift = 0;   // двойное нажатие Shift тоже исправляет слово
+static DWORD g_shiftDownAt = 0;           // поток хука: когда нажали Shift
+static bool  g_shiftClean = false;        // пока Shift зажат, других клавиш не было
+static DWORD g_lastShiftTap = 0;          // когда закончилось прошлое одиночное нажатие Shift   // фокус в поле пароля (обновляет главный поток)
 static std::vector<std::wstring> g_dcExcept;            // слова-исключения (как набраны), под g_cs
 static const wchar_t* const kDcBuiltin[] = { L"ВКонтакте" };
 struct DcUndo {
@@ -462,9 +468,40 @@ static LRESULT CALLBACK KeyboardProc(int code, WPARAM wp, LPARAM lp) {
     // Любая клавиша закрывает панель раскладок (как у системных всплывающих окон).
     if (down && g_flyVisible) PostMessageW(g_mainWnd, WMU_FLYHIDE, 0, 0);
 
+    const bool isShift = vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
     if (!down) {
         if (vk == g_swallowUp) { g_swallowUp = 0; return 1; }
+        // Двойной Shift: два коротких нажатия подряд, без других клавиш между ними.
+        if (isShift && g_doubleShift && g_shiftClean) {
+            g_shiftClean = false;
+            const DWORD now = k->time;
+            if (now - g_shiftDownAt < 300) {
+                const UINT dbl = GetDoubleClickTime() < 300 ? 300 : (GetDoubleClickTime() > 600 ? 600 : GetDoubleClickTime());
+                if (g_lastShiftTap && now - g_lastShiftTap < dbl) {
+                    g_lastShiftTap = 0;
+                    HWND fg = GetForegroundWindow();
+                    if (!g_paused && !(g_autoFull && g_fullscreen) && !g_inPassword && !g_hookExcl.Check(fg))
+                        PostMessageW(g_mainWnd, WMU_WORD, 0, 0);
+                } else {
+                    g_lastShiftTap = now;
+                }
+            } else {
+                g_lastShiftTap = 0;
+            }
+        }
         return CallNextHookEx(nullptr, code, wp, lp);
+    }
+    if (isShift) {
+        if (!g_shiftClean || k->time - g_shiftDownAt > 1000) {   // первое нажатие, не автоповтор
+            if (!(GetAsyncKeyState(VK_CONTROL) & 0x8000) && !(GetAsyncKeyState(VK_MENU) & 0x8000) &&
+                !(GetAsyncKeyState(VK_LWIN) & 0x8000) && !(GetAsyncKeyState(VK_RWIN) & 0x8000)) {
+                g_shiftClean = true;
+                g_shiftDownAt = k->time;
+            }
+        }
+    } else {
+        g_shiftClean = false;   // любая другая клавиша: это не одиночный Shift
+        g_lastShiftTap = 0;
     }
     if (g_swallowUp && vk == g_swallowUp)
         return 1;   // автоповтор удерживаемой горячей клавиши
@@ -882,7 +919,7 @@ static std::wstring ConvertText(const std::wstring& text, HKL src, HKL dst) {
 
 static std::vector<BYTE> g_wavOther, g_wavEn;
 
-static std::vector<BYTE> MakeSoftWav(double freq) {
+static std::vector<BYTE> MakeSoftWav(double freq, double decay = 0.035, double gain = 0.3, double glide = 0.0) {
     const int    SR = 44100;
     const double pi = 3.14159265358979323846;
     const size_t n0 = static_cast<size_t>(0.15 * SR);
@@ -891,8 +928,10 @@ static std::vector<BYTE> MakeSoftWav(double freq) {
     std::vector<double> src(n, 0.0);
     for (size_t i = 0; i < n0; ++i) {
         const double t = double(i) / SR;
-        const double e = t < 0.006 ? t / 0.006 : std::exp(-(t - 0.006) / 0.035);
-        src[i] = (std::sin(2 * pi * freq * t) + 0.25 * std::sin(4 * pi * freq * t)) * e;
+        const double e = t < 0.006 ? t / 0.006 : std::exp(-(t - 0.006) / decay);
+        // glide: тон плавно опускается (для звука отказа), фаза считается интегралом частоты.
+        const double ph = 2 * pi * (freq * t - glide * freq * t * t / 0.3);
+        src[i] = (std::sin(ph) + 0.25 * std::sin(2 * ph)) * e;
     }
 
     // Небольшая «комната» (реверберация Шрёдера): 4 гребенчатых + 2 всепропускающих фильтра.
@@ -936,10 +975,18 @@ static std::vector<BYTE> MakeSoftWav(double freq) {
     put32(16, 16); put16(20, 1); put16(22, 1); put32(24, SR); put32(28, SR * 2); put16(32, 2); put16(34, 16);
     std::memcpy(&w[36], "data", 4); put32(40, dataBytes);
     for (size_t i = 0; i < n; ++i) {
-        const short v = static_cast<short>(std::lround(s[i] / peak * 0.3 * 32767));
+        const short v = static_cast<short>(std::lround(s[i] / peak * gain * 32767));
         std::memcpy(&w[44 + i * 2], &v, 2);
     }
     return w;
+}
+
+static std::vector<BYTE> g_wavRefuse;
+
+// «Не получилось»: тихий низкий глухой звук вместо резкого системного сигнала.
+static void PlayRefuseSound() {
+    if (!g_sound || g_wavRefuse.empty()) return;
+    PlaySoundW(reinterpret_cast<LPCWSTR>(g_wavRefuse.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 }
 
 static void PlaySwitchSound(HKL hkl) {
@@ -1141,12 +1188,12 @@ static void ConvertLastWord() {
     HKL src = nullptr, orig = nullptr;
 
     EnterCriticalSection(&g_cs);
-    if (fg != g_bufWnd || g_buf.empty()) { LeaveCriticalSection(&g_cs); return; }
+    if (fg != g_bufWnd || g_buf.empty()) { LeaveCriticalSection(&g_cs); PlayRefuseSound(); return; }   // исправлять нечего
     size_t i = g_buf.size();
     while (i > 0 && g_buf[i - 1].vk == VK_SPACE) --i;     // хвостовые пробелы
     const size_t wordEnd = i;
     while (i > 0 && g_buf[i - 1].vk != VK_SPACE) --i;     // само слово
-    if (i == wordEnd) { LeaveCriticalSection(&g_cs); return; }
+    if (i == wordEnd) { LeaveCriticalSection(&g_cs); PlayRefuseSound(); return; }
     seg.assign(g_buf.begin() + static_cast<std::ptrdiff_t>(i), g_buf.end());
     const bool repeat = g_repeat && g_lastTarget && g_origLayout;
     src = repeat ? g_lastTarget : WindowLayout(fg);
@@ -1155,7 +1202,7 @@ static void ConvertLastWord() {
     LeaveCriticalSection(&g_cs);
 
     HKL dst = NextLayout(src);
-    if (!dst) { MessageBeep(MB_ICONWARNING); return; }
+    if (!dst) { PlayRefuseSound(); return; }
 
     // Всё переводим по клавишам («Ghbdtn?» -> «Привет,», «Ns&» -> «Ты?»), кроме запятой, точки
     // и похожих знаков на краю слова: они не превращаются в «б» и «ю». Подробнее в KeepTypedSymbol.
@@ -1232,11 +1279,11 @@ static void ConvertSelection() {
     ReselectIfRepeat(fg);
     std::vector<ClipItem> saved;
     std::wstring text;
-    if (!CopySelection(saved, text)) return;
+    if (!CopySelection(saved, text)) { PlayRefuseSound(); return; }   // ничего не выделено
 
     HKL src = DetectLayout(text, WindowLayout(fg));
     HKL dst = NextLayout(src);
-    if (!dst) { RestoreClipboard(saved); MessageBeep(MB_ICONWARNING); return; }
+    if (!dst) { RestoreClipboard(saved); PlayRefuseSound(); return; }
 
     const std::wstring out = ConvertText(text, src, dst);
     if (out != text) PasteText(out, saved);
@@ -1285,7 +1332,7 @@ static void ChangeSelectionCase() {
     ReselectIfRepeat(fg);
     std::vector<ClipItem> saved;
     std::wstring text;
-    if (!CopySelection(saved, text)) return;
+    if (!CopySelection(saved, text)) { PlayRefuseSound(); return; }   // ничего не выделено
     const std::wstring out = NextCase(text);
     if (out != text) PasteText(out, saved);
     else             RestoreClipboard(saved);
@@ -1412,6 +1459,7 @@ static void LoadConfig() {
     ApplyUiLanguage();
     g_trayHidden = GetPrivateProfileIntW(L"options", L"tray_hidden", 0, p.c_str()) != 0;
     InterlockedExchange(&g_fixDCaps, GetPrivateProfileIntW(L"options", L"fix_double_caps", 1, p.c_str()) ? 1 : 0);
+    InterlockedExchange(&g_doubleShift, GetPrivateProfileIntW(L"options", L"double_shift", 0, p.c_str()) ? 1 : 0);
     {
         wchar_t dc[4096] = {};
         GetPrivateProfileStringW(L"options", L"double_caps_exceptions", L"", dc, ARRAYSIZE(dc), p.c_str());
@@ -1470,6 +1518,7 @@ static void SaveConfig() {
     WritePrivateProfileStringW(L"options", L"tray_icon", nullptr, p.c_str());   // вид значка больше не выбирается
     put(L"options", L"tray_hidden", g_trayHidden ? 1 : 0);
     put(L"options", L"fix_double_caps", g_fixDCaps ? 1 : 0);
+    put(L"options", L"double_shift", g_doubleShift ? 1 : 0);
     {
         std::wstring dc;
         EnterCriticalSection(&g_cs);
@@ -1985,11 +2034,15 @@ static void OnTimer() {
     InterlockedExchange(&g_fullscreen, IsFullscreenWindow(fg) ? 1 : 0);
     const bool off = g_paused || (g_autoFull && g_fullscreen) || g_timerExcl.Check(fg);
 
-    // Раскладка сменилась в том же окне (любым способом) — играем звук.
-    if (fg == g_seenWnd && hkl != g_seenHkl && g_seenHkl && !off)
-        PlaySwitchSound(hkl);
-    g_seenWnd = fg;
-    g_seenHkl = hkl;
+    // Звук при смене раскладки: и когда её переключили (любым способом), и когда перешли в окно
+    // с другой раскладкой. Панель задач, переключатель окон и наши всплывающие окна пропускаем,
+    // чтобы сравнивать раскладки настоящих окон.
+    if (!IsShellOrOwnWindow(fg) || fg == g_settingsWnd) {
+        if (hkl != g_seenHkl && g_seenHkl && !off)
+            PlaySwitchSound(hkl);
+        g_seenWnd = fg;
+        g_seenHkl = hkl;
+    }
 
     static HWND lastExtWnd = nullptr;   // имя процесса узнаём только при смене окна
     if (!IsShellOrOwnWindow(fg)) g_lastExtHwnd = fg;
@@ -2042,13 +2095,13 @@ static void ApplyTrayVisibility() {
 // ---------------------------------------------------------------------------
 
 enum {
-    ST_W = 460, ST_TITLE = 74, ST_PADX = 18, ST_ROW = 50, ST_ROW2 = 62, ST_H2 = 34, ST_LAY = 58, ST_FOOT = 46,
+    ST_W = 460, ST_TITLE = 70, ST_PADX = 18, ST_ROW = 46, ST_ROW2 = 56, ST_H2 = 30, ST_LAY = 42, ST_FOOT = 44,
 };
 
 enum SetItem {
     IT_NONE = 0, IT_MIN, IT_CLOSE,
     IT_HK0, IT_HK1, IT_HK2, IT_HK3,
-    IT_CAPS, IT_AUTO, IT_SOUND, IT_GAMES, IT_SHOWICON, IT_DCAPS,
+    IT_CAPS, IT_AUTO, IT_SOUND, IT_GAMES, IT_SHOWICON, IT_DCAPS, IT_DSHIFT,
     IT_LANG, IT_ADD, IT_GITHUB,
     IT_CHIP = 100,   // крестик у программы-исключения: IT_CHIP + номер
     IT_LAYOUT = 200, // карточка раскладки: IT_LAYOUT + номер
@@ -2372,7 +2425,7 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
     Font* fRow   = SetFont(14);
     Font* fSmall = SetFont(12);
     Font* fPill  = SetFont(12.5f, true);
-    Font* fCode  = SetFont(19, false, true);
+    Font* fCode  = SetFont(17, false, true);
     Font* fLay   = SetFont(13.5f);
     Font* fFoot  = SetFont(12);
     Font* fMini  = SetFont(7.5f, false, true);
@@ -2469,7 +2522,7 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
         EnterCriticalSection(&g_cs);
         for (int i = 0; i < 4; ++i) hk[i] = *HotkeySlot(i);
         LeaveCriticalSection(&g_cs);
-        const float h = ST_ROW * 4 + ST_ROW2;
+        const float h = ST_ROW * 4 + ST_ROW2 * 2;
         card(y, h);
         const wchar_t* labels[4] = { T(S_ROW_WORD), T(S_ROW_SEL), T(S_ROW_CASE), T(S_ROW_SET) };
         for (int i = 0; i < 4; ++i) {
@@ -2489,10 +2542,16 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
         }
         const float yy = y + 4 * ST_ROW;
         sep(yy);
-        hoverBg(yy, ST_ROW2, IT_CAPS, false, true);
+        hoverBg(yy, ST_ROW2, IT_CAPS, false, false);
         rowLabel(yy, ST_ROW2, ICO_CAPS, T(S_CHK_CAPS), T(S_CAPS_HINT), CW - 120);
         DrawToggle(g, c, L + CW - 56, yy + (ST_ROW2 - 20) / 2, g_capsSwitch != 0);
         hit(L, yy, CW, ST_ROW2, IT_CAPS);
+        const float y2 = yy + ST_ROW2;
+        sep(y2);
+        hoverBg(y2, ST_ROW2, IT_DSHIFT, false, true);
+        rowLabel(y2, ST_ROW2, ICO_CAPS, T(S_ROW_DSHIFT), T(S_DSHIFT_HINT), CW - 120);
+        DrawToggle(g, c, L + CW - 56, y2 + (ST_ROW2 - 20) / 2, g_doubleShift != 0);
+        hit(L, y2, CW, ST_ROW2, IT_DSHIFT);
         y += h;
     }
 
@@ -2605,14 +2664,14 @@ static void SettingsPaint(Gdiplus::Graphics& g, float W, float H) {
         y += h;
     }
 
-    // Не исправлять ДВе заглавные
-    y += 6;
-    h2(T(S_SEC_DCAPS));
-    {
-        std::vector<std::wstring> words;
-        EnterCriticalSection(&g_cs);
-        words = g_dcExcept;
-        LeaveCriticalSection(&g_cs);
+    // Не исправлять ДВе заглавные (раздел появляется, когда есть хотя бы одно слово)
+    std::vector<std::wstring> words;
+    EnterCriticalSection(&g_cs);
+    words = g_dcExcept;
+    LeaveCriticalSection(&g_cs);
+    if (!words.empty()) {
+        y += 6;
+        h2(T(S_SEC_DCAPS));
         const float chipH = 30, gap = 8, padX = 14, padY = 12;
         if (words.empty()) {
             const float h = 48;
@@ -2841,6 +2900,7 @@ static void SettingsClick(HWND wnd, int id) {
     case IT_SOUND: InterlockedExchange(&g_sound, g_sound ? 0 : 1); SaveConfig(); break;
     case IT_GAMES: InterlockedExchange(&g_autoFull, g_autoFull ? 0 : 1); SaveConfig(); break;
     case IT_DCAPS: InterlockedExchange(&g_fixDCaps, g_fixDCaps ? 0 : 1); SaveConfig(); break;
+    case IT_DSHIFT: InterlockedExchange(&g_doubleShift, g_doubleShift ? 0 : 1); SaveConfig(); break;
     case IT_AUTO:  SetAutostart(!IsAutostart()); break;
     case IT_SHOWICON:
         g_trayHidden = !g_trayHidden;
@@ -4084,6 +4144,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
     g_uiFont = CreateFontIndirectW(&ncm.lfMessageFont);
 
     g_wavOther = MakeSoftWav(330.0);
+    g_wavRefuse = MakeSoftWav(220.0, 0.05, 0.25, 0.35);
     g_wavEn = MakeSoftWav(440.0);
     g_darkTaskbar = !IsLightTaskbar();
 

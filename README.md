@@ -42,6 +42,8 @@ KeySwitch does nothing until you ask. You can see when you've typed in the wrong
 
 Regular Caps Lock is `Shift+Caps Lock`. Every hotkey can be changed in Settings.
 
+No Pause key on your keyboard? This happens on many laptops, and on a Mac when you work with Windows through Parallels or remote desktop. Turn on *Double Shift also fixes the word* in Settings and press Shift twice instead.
+
 ## What else it does
 
 - **Converts punctuation by key, as you pressed it.** `Ghbdtn?` → `Привет,`, `Rfr ltkf&` → `Как дела?`. A comma or period at the end of a word stays as is: `Ghbdtn, rfr` → `Привет, как`.
@@ -57,7 +59,7 @@ Regular Caps Lock is `Shift+Caps Lock`. Every hotkey can be changed in Settings.
 - **Light and dark theme**, following Windows. Changes in Settings apply instantly.
 
 <p align="center">
-  <img src="docs/settings-en.png" alt="KeySwitch settings window" width="440">
+  <img src="docs/settings-en.png" alt="KeySwitch settings in light and dark theme" width="760">
 </p>
 
 ## Installation
@@ -120,7 +122,7 @@ In the tray, English is shown in black (white on a dark taskbar), any other layo
 
 - In windows running as administrator, KeySwitch works only if it runs as administrator too. That's a Windows security rule.
 - In some windowed games and old programs the fix may not work. Add them to the exceptions.
-- Mac keyboards have no Pause key. Assign other hotkeys in Settings.
+- A Mac keyboard has no Pause key (when you use Windows through Parallels or remote desktop). Turn on Double Shift or assign other hotkeys in Settings.
 
 </details>
 

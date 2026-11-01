@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.7 (2026-11-01)
+- **Double Shift.** A new option in Settings: press Shift twice quickly to fix the last word, just like Pause. Handy on laptops without a Pause key and on a Mac when you use Windows through Parallels or remote desktop. Off by default. Pause keeps working too.
+- A soft low sound when there is nothing to fix (nothing typed or nothing selected) or only one layout is installed. It replaces the sharp Windows warning beep. Turned off together with the switch sound.
+- The switch sound also plays when you move to a window with a different layout, so you hear that the layout has changed. Moving between windows with the same layout stays silent.
+- Settings are more compact: shorter rows and slimmer layout cards, so the window fits on smaller screens. The list of remembered words is shown only when it is not empty.
+
 ## 1.5.6 (2026-10-31)
 - **Fixes TWo capitals.** Typed `ПРивет` or `HEllo` and pressed Space? KeySwitch turns it into `Привет` or `Hello`. Press Backspace right after the fix to undo it: the word comes back as typed and KeySwitch remembers it (for example `ВКонтакте`). Remembered words are listed in Settings and can be removed there. Short words like `IDs` and `ПК` are never touched. Can be turned off in Settings.
 - **Password fields are left alone.** In a password field KeySwitch keeps nothing in memory and fixes nothing, Pause included. Caps Lock still switches the layout. Works in the fields Windows can recognize as password fields: regular programs and browsers.
