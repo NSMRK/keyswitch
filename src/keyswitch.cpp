@@ -73,7 +73,8 @@ enum : UINT {
     WMU_CAPS,                // хук: Caps Lock — переключить раскладку
     WMU_CAPTURED,            // хук -> окно настроек: записано сочетание (wParam=vk, lParam=mods; vk=0: отмена)
     WMU_FLYHIDE,             // хук: нажата клавиша, пока открыта панель раскладок
-    WMU_FLYCLICK,            // хук: клик мышью, пока открыта панель (wParam=x, lParam=y)
+    WMU_FLYCLICK,            // хук: клик мышью, пока открыта панель или меню (wParam=x, lParam=y)
+    WMU_MENUHIDE,            // хук: Esc, пока открыто меню, а фокус у другой программы
     WMU_OPENSET,             // хук или второй запуск: открыть настройки
     WMU_DCFIX,               // хук: исправить ДВе заглавные в только что набранном слове
     WMU_DCUNDO,              // хук: Backspace сразу после исправления, вернуть как было
@@ -140,6 +141,7 @@ static volatile LONG g_capsSwitch  = 1;      // Caps Lock переключает
 static volatile LONG g_sound       = 1;      // звук при переключении
 static volatile LONG g_autoFull    = 1;      // отключаться в полноэкранных играх
 static volatile LONG g_flyVisible  = 0;      // открыта панель раскладок (читает поток хука)
+static volatile LONG g_menuVisible = 0;      // открыто меню значка (читает поток хука)
 static bool          g_trayHidden  = false;  // значок в трее скрыт (настройки: горячая клавиша)
 static volatile LONG g_fullscreen  = 0;      // активное окно сейчас полноэкранное (обновляет таймер)
 static volatile LONG g_exclVersion = 0;      // растёт при каждом изменении списка исключений
@@ -467,6 +469,8 @@ static LRESULT CALLBACK KeyboardProc(int code, WPARAM wp, LPARAM lp) {
 
     // Любая клавиша закрывает панель раскладок (как у системных всплывающих окон).
     if (down && g_flyVisible) PostMessageW(g_mainWnd, WMU_FLYHIDE, 0, 0);
+    // Esc закрывает меню, даже если Windows не отдала ему фокус.
+    if (down && g_menuVisible && vk == VK_ESCAPE) PostMessageW(g_mainWnd, WMU_MENUHIDE, 0, 0);
 
     const bool isShift = vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
     if (!down) {
@@ -615,7 +619,7 @@ static LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
         (wp == WM_LBUTTONDOWN || wp == WM_RBUTTONDOWN || wp == WM_MBUTTONDOWN)) {
         // Клик мышью мог переставить курсор, и буфер больше не соответствует тексту.
         ResetBuffer();
-        if (g_flyVisible) {
+        if (g_flyVisible || g_menuVisible) {
             const auto* m = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
             PostMessageW(g_mainWnd, WMU_FLYCLICK, static_cast<WPARAM>(m->pt.x), static_cast<LPARAM>(m->pt.y));
         }
@@ -2046,7 +2050,8 @@ static void OnTimer() {
 
     static HWND lastExtWnd = nullptr;   // имя процесса узнаём только при смене окна
     if (!IsShellOrOwnWindow(fg)) g_lastExtHwnd = fg;
-    if (fg != lastExtWnd && !IsShellOrOwnWindow(fg)) {
+    // Невидимые окна (служебные процессы вроде уведомлений BitLocker) в меню исключений не предлагаем.
+    if (fg != lastExtWnd && !IsShellOrOwnWindow(fg) && IsWindowVisible(fg)) {
         lastExtWnd = fg;
         const std::wstring exe = ProcessName(fg);
         if (!exe.empty()) g_lastExtExe = exe;
@@ -3803,8 +3808,19 @@ static void MenuPaint(HDC hdc) {
 }
 
 static void HideTrayMenu() {
+    InterlockedExchange(&g_menuVisible, 0);
     if (g_menuWnd && IsWindowVisible(g_menuWnd)) ShowWindow(g_menuWnd, SW_HIDE);
     g_menuHover = -1;
+}
+
+// Клик мимо меню закрывает его. Обычно это делает потеря фокуса, но если в момент открытия
+// была активна системная программа, Windows может не отдать меню фокус, и тогда оно висело бы.
+static void MenuOutsideClick(int x, int y) {
+    if (!g_menuVisible) return;
+    POINT pt = { x, y };
+    RECT wr;
+    GetWindowRect(g_menuWnd, &wr);
+    if (!PtInRect(&wr, pt)) HideTrayMenu();
 }
 
 static void MenuChoose(int i) {
@@ -3928,6 +3944,7 @@ static void ShowTrayMenu() {
     InvalidateRect(g_menuWnd, nullptr, FALSE);
     ForceForeground(g_menuWnd);
     SetFocus(g_menuWnd);
+    InterlockedExchange(&g_menuVisible, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -4050,6 +4067,10 @@ static LRESULT CALLBACK MainProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WMU_FLYCLICK:
         FlyOutsideClick(static_cast<int>(wp), static_cast<int>(lp));
+        MenuOutsideClick(static_cast<int>(wp), static_cast<int>(lp));
+        return 0;
+    case WMU_MENUHIDE:
+        HideTrayMenu();
         return 0;
     case WM_SETTINGCHANGE:
         // Пользователь переключил светлую/тёмную тему: перерисовываем значок.

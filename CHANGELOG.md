@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.8 (2026-11-01)
+- The tray menu now closes when you click anywhere outside it. Before, it could stay open if a system program (for example, a BitLocker notification) was active when you right-clicked the icon. Esc closes it too.
+- Hidden system programs are no longer offered in the menu as "Turn off in …".
+
 ## 1.5.7 (2026-11-01)
 - **Double Shift.** A new option in Settings: press Shift twice quickly to fix the last word, just like Pause. Handy on laptops without a Pause key and on a Mac when you use Windows through Parallels or remote desktop. Off by default. Pause keeps working too.
 - A soft low sound when there is nothing to fix (nothing typed or nothing selected) or only one layout is installed. It replaces the sharp Windows warning beep. Turned off together with the switch sound.

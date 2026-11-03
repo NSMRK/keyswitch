@@ -22,7 +22,7 @@ All the code is in one file of about 3,700 lines, with no third-party libraries.
 
 ## Tiny
 
-One 410 KB file. No installation, no frameworks, no background services. About 3 MB of memory and 0% CPU while you're not pressing anything.
+One 420 KB file. No installation, no frameworks, no background services. About 3 MB of memory and 0% CPU while you're not pressing anything.
 
 ## Why no dictionaries
 
